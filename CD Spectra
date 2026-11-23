@@ -1,0 +1,93 @@
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# 1. Load the data from CSV
+# Replace 'spectrum_data.csv' with the actual path to your file
+df = pd.read_csv("CD_16_17.csv")
+
+# 2. Define Groups and Styling parameters
+# Format: (column_name, line_color, line_width)
+cyan_vars = [
+    ("RfaH", "cyan", 4, "o"),      # Circle
+    #("2", "green", 1, "^"),         # Triangle up
+    #("4", "blue", 1, "v"),         # Triangle down
+    #("5", "magenta", 1, "D"),         # Diamond
+    #("6", "salmon", 1, "X"),         # Pentagon
+    #("NIH-9", "orange", 1, "h"),      # Hexagon
+    #("NIH-11", "violet", 1, "*")     # Star
+]
+
+red_vars = [
+    #("7", "grey", 1, "p"),          # Filled X
+    #("8", "grey", 1, "P"),          # Filled Plus
+    #("10", "grey", 1, "d"),         # Thin Diamond
+    #("NIH-13", "grey", 1, "<"),     # Triangle left
+    ("NusG", "red", 4, ">"),       # Triangle right
+    #("1", "grey", 1, "s")         # Square
+]
+
+grey_var= [
+    ("16", "purple", 1, "s"),
+    ("17", "purple", 2, "d")
+]
+
+
+# Combine all variables to loop through them easily
+all_vars = cyan_vars + red_vars + grey_var
+
+# 3. Create the Plot
+plt.figure(figsize=(10, 6))
+
+# Extract the wavelength column to use as the X-axis
+x = df["Wavelength"]
+
+# Loop through each variable and plot its corresponding column
+for col_name, color, lw, marker in all_vars:
+    if col_name in df.columns:
+        plt.plot(
+            x,
+            df[col_name],
+            label=col_name,
+            color=color,
+            linewidth=lw,
+            marker=marker,
+            markersize=7,          # Increased size slightly from 4 to 6 to highlight shapes
+            markevery=2,           # Plots a symbol on every 2nd point to avoid crowding
+            mec='#2c3e50',         # Dark charcoal border makes colors and shapes pop
+            mew=1.0                # 1-pixel border thickness for crisp edges
+        )
+    else:
+        print(f"Warning: Column '{col_name}' not found in CSV.")
+
+# 4. Graph Formatting & Layout
+#plt.title("CD Spectra of RfaH/NusG Variants", fontweight="bold", fontsize=20)
+plt.xlabel("Wavelength (nm)", fontsize=18)
+plt.ylabel("Mean Residue Ellipticity", fontsize=18)
+
+# Increased axis tick label font sizes (the numbers along the X and Y axes)
+plt.tick_params(axis='both', which='major', labelsize=16)
+
+
+# Axis Boundaries
+plt.xlim(195, 260)
+plt.ylim(-19000, 20000)
+
+
+# Multi-column legend mimicking the original image
+plt.legend(
+    title="Variants",
+    title_fontsize=16,   # Controls the font size of "Variants"
+    loc="upper center",
+    ncol=5,
+    fontsize=14,    # Controls the font size of the item labels (RfaH, NusG, etc.)
+    frameon=True
+)
+
+plt.grid(False)  # Ensures background stays clean white like the original image
+plt.tight_layout()
+
+# Save the box plot image
+plt.savefig('CD Spectra Update 16 17 2026 10 13.png', dpi=1600, bbox_inches='tight')
+
+# 5. Display the graph
+plt.show()
