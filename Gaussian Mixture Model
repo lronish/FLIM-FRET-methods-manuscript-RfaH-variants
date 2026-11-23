@@ -1,0 +1,355 @@
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+import sys
+
+from scipy.stats import skew, kurtosis
+from scipy.optimize import brentq
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import StandardScaler
+
+
+# ----------------------------
+# Helpers
+# ----------------------------
+def _iqr(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=float)
+    return float(np.percentile(x, 75) - np.percentile(x, 25))
+
+
+def summarize_by_protein(
+    df: pd.DataFrame,
+    protein_col: str = "Protein",
+    metric_col: str = "FRET",
+) -> pd.DataFrame:
+    """
+    Reduce replicate-level rows to one row per protein using summary stats
+    of the FRET column.
+    """
+    if protein_col not in df.columns:
+        raise ValueError(f"Missing required column: {protein_col}")
+    if metric_col not in df.columns:
+        raise ValueError(f"Missing required column: {metric_col}")
+
+    d = df[[protein_col, metric_col]].copy()
+    d[metric_col] = pd.to_numeric(d[metric_col], errors="coerce")
+    d = d.dropna(subset=[protein_col, metric_col])
+
+    def summarize(group: pd.DataFrame) -> pd.Series:
+        x = group[metric_col].to_numpy(dtype=float)
+        n = len(x)
+        return pd.Series(
+            {
+                "n": n,
+                "mean": float(np.mean(x)),
+                "std": float(np.std(x, ddof=1)) if n > 1 else 0.0,
+                "median": float(np.median(x)),
+                "iqr": _iqr(x) if n > 1 else 0.0,
+                "skew": float(skew(x, bias=False)) if n > 2 else 0.0,
+                "kurtosis": float(kurtosis(x, bias=False)) if n > 3 else 0.0,
+                "min": float(np.min(x)),
+                "max": float(np.max(x)),
+            }
+        )
+
+    summary = d.groupby(protein_col, dropna=False).apply(summarize).reset_index()
+    return summary.rename(columns={protein_col: "Protein"})
+
+
+def fit_gmm_on_summary(
+    summary_df: pd.DataFrame,
+    feature_cols=None,
+    random_state: int = 0,
+) -> tuple[pd.DataFrame, StandardScaler, GaussianMixture, pd.DataFrame]:
+    """
+    Fit a 2-component GMM to protein-level summary features.
+    """
+    #if feature_cols is None:
+        #feature_cols = ["mean", "std", "median", "iqr", "skew", "kurtosis", "n"]
+    #feature_cols = ["mean","std","median"]
+    #feature_cols = ["mean"]
+    feature_cols = ["median"]
+    
+
+    missing = [c for c in feature_cols if c not in summary_df.columns]
+    if missing:
+        raise ValueError(f"Missing feature columns: {missing}")
+
+    X = summary_df[feature_cols].copy()
+    #print(X)
+    X = X.replace([np.inf, -np.inf], np.nan)
+    X = X.fillna(X.median(numeric_only=True))
+
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
+
+    gmm = GaussianMixture(
+        n_components=2,
+        covariance_type="full",
+        n_init=50,
+        reg_covar=0.01,
+        random_state=random_state,
+    )
+    gmm.fit(Xs)
+
+    probs = gmm.predict_proba(Xs)
+    labels = gmm.predict(Xs)
+
+    results = summary_df.copy()
+    results["gmm_component"] = labels
+
+    # Choose FS-like component as the one with the higher median FRET
+    comp_median_fret = (
+        results.groupby("gmm_component")["median"]
+        .median()
+        .sort_values()
+    )
+    single_component = int(comp_median_fret.index[0])
+    fs_component = int(comp_median_fret.index[1])
+
+    results["P_FS"] = probs[:, fs_component]
+    results["P_single_fold"] = probs[:, single_component]
+
+    results["class_0p5"] = np.where(results["P_FS"] >= 0.5, "FS-like", "single-fold-like")
+    results["class_ambiguous"] = np.select(
+        [results["P_FS"] >= 0.75, results["P_FS"] <= 0.25],
+        ["FS-like", "single-fold-like"],
+        default="ambiguous",
+    )
+
+    component_summary = (
+        results.groupby("gmm_component")
+        .agg(
+            n_proteins=("Protein", "count"),
+            mean_fret=("mean", "mean"),
+            sd_fret=("mean", "std"),
+            mean_PFS=("P_FS", "mean"),
+        )
+        .reset_index()
+        .sort_values("mean_fret", ascending=False)
+    )
+
+    return results, scaler, gmm, component_summary
+
+
+def suggest_cutoff_from_components(results_df: pd.DataFrame) -> float:
+    """
+    Simple suggested cutoff in raw FRET units:
+    midpoint between the two component median FRET values.
+    """
+    comp_means = results_df.groupby("gmm_component")["median"].mean().sort_values()
+    #print(results_df.groupby("gmm_component")["median"].to_list())
+    if len(comp_means) > 7:
+        raise ValueError("Expected exactly 2 GMM components.")
+    return float((comp_means.iloc[0] + comp_means.iloc[1]) / 2.0)
+
+
+def suggest_cutoff_from_GMM(gmm,component_summary, scaler):
+
+    sds = component_summary['sd_fret'].to_list()
+    medians = component_summary['mean_fret'].to_list()
+
+    # assuming your fitted model is called gmm
+    means = gmm.means_.flatten()
+
+    # sort components from low-FRET to high-FRET
+    order = np.argsort(means)
+    low_comp, high_comp = order
+
+    # search between the two fitted Gaussian means
+    x_low = means[low_comp]
+    x_high = means[high_comp]
+
+    def posterior_difference(x):
+        probs = gmm.predict_proba([[x]])[0]
+        return probs[low_comp] - probs[high_comp]
+
+    cutoff = brentq(posterior_difference, x_low, x_high)
+
+    cutoff_fret = scaler.inverse_transform(
+        [[cutoff]]
+    )[0, 0]
+
+    return cutoff_fret
+
+def get_gmm_cutoff(medians, random_state=None):
+    medians = np.asarray(medians).reshape(-1, 1)
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(medians)
+
+    gmm = GaussianMixture(
+        n_components=2,
+        random_state=random_state,
+        covariance_type="full",
+        reg_covar=0.1
+    )
+    gmm.fit(X_scaled)
+
+    means = gmm.means_.flatten()
+    order = np.argsort(means)
+
+    low_comp = order[0]
+    high_comp = order[1]
+
+    x_low = means[low_comp]
+    x_high = means[high_comp]
+
+    def posterior_difference(x):
+        probs = gmm.predict_proba([[x]])[0]
+        return probs[low_comp] - probs[high_comp]
+
+    cutoff_scaled = brentq(
+        posterior_difference,
+        x_low,
+        x_high
+    )
+
+    cutoff_fret = scaler.inverse_transform(
+        [[cutoff_scaled]]
+    )[0, 0]
+
+    return cutoff_fret, gmm
+
+def bootstrap_cutoff(medians, co=0):
+
+    rng = np.random.default_rng(42)
+    n_boot = 10000
+    
+    cutoffs = []
+
+    for i in range(n_boot):
+
+        if co!= 0:
+
+            medians1 = [x for x in medians if x > co]
+            medians2 = [x for x in medians if x <= co]
+
+            boot_medians1 = rng.choice(
+                medians1,
+                size=len(medians1),
+                replace=True
+                )
+
+            boot_medians2 = rng.choice(
+                medians2,
+                size=len(medians2),
+                replace=True
+                )
+
+            boot_medians = list(boot_medians1)+list(boot_medians2)
+
+        
+        else:
+            boot_medians = rng.choice(
+                medians,
+                size=len(medians),
+                replace=True
+                )
+
+        try:
+            cutoff = get_gmm_cutoff(
+                boot_medians,
+                random_state=i
+            )
+            cutoffs.append(cutoff[0])
+
+        except (ValueError, np.linalg.LinAlgError):
+            pass
+
+
+    cutoffs = np.array(cutoffs)
+
+    print("Bootstrap median cutoff:",
+          np.median(cutoffs))
+
+    print("95% bootstrap interval:",
+      np.percentile(cutoffs, [2.5, 97.5]))
+
+    return np.median(cutoffs)
+
+def loo_cutoff(medians):
+
+    rng = np.random.default_rng(42)
+    cutoffs = []
+
+    for i in range(len(medians)):
+        loo_medians = np.delete(medians,i)
+
+        cutoff, gmm = get_gmm_cutoff(loo_medians)
+        cutoffs.append(cutoff)
+
+        print(
+            i,
+            "removed:", medians[i],
+            "cutoff:", cutoff,
+            "means:", gmm.means_.flatten(),
+            "weights:", gmm.weights_,
+            "variances:", gmm.covariances_.flatten()
+            )
+    cutoffs = np.array(cutoffs)
+
+    print("Bootstrap median cutoff:",
+          np.median(cutoffs))
+
+    print("LOO_range:",min(cutoffs),max(cutoffs))
+
+def main(
+    csv_path: str,
+    output_path: str = "gmm_results_by_protein.csv",
+    metric_col: str = "FRET",
+    protein_col: str = "Protein",
+    random_state: int = 0,
+):
+    df = pd.read_csv(csv_path)
+
+    summary = summarize_by_protein(
+        df,
+        protein_col=protein_col,
+        metric_col=metric_col,
+    )
+
+    results, scaler, gmm, component_summary = fit_gmm_on_summary(
+        summary_df=summary,
+        feature_cols=["mean", "std", "median", "iqr", "skew", "kurtosis", "n"],
+        random_state=random_state,
+    )
+
+    cutoff = suggest_cutoff_from_GMM(gmm,component_summary,scaler)
+
+    bootstrap_cutoff(summary["median"].to_list())
+    
+    results = results.sort_values("P_FS", ascending=False)
+    results.to_csv(output_path, index=False)
+
+    print("\n=== Component summary ===")
+    print(component_summary.to_string(index=False))
+
+    print(f"\nSuggested cutoff in raw {metric_col} units: {cutoff:.4f}")
+    print(f"Saved results to: {output_path}")
+
+    return results, component_summary, cutoff
+
+
+
+if __name__ == "__main__":
+    # 1. Hardcode your input and output paths directly right here:
+    my_input_csv = "combined_final_extended_edit.csv"  # <-- Replace with your real file name!
+    my_output_csv = "gmm_results_by_proteinoptT.csv"
+    
+    # 2. Run the main function safely inside your notebook
+    try:
+        results, component_summary, cutoff = main(
+            csv_path=my_input_csv,
+            output_path=my_output_csv,
+            metric_col="FRET",
+            protein_col="Protein",
+            random_state=0,
+        )
+        print("Analysis completed successfully!")
+        
+    except FileNotFoundError:
+        print(f"\nError: Could not find the file '{my_input_csv}'.")
+        print("Make sure you have uploaded the file to your current Jupyter directory folder.")
