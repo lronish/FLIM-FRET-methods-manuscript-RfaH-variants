@@ -1,0 +1,196 @@
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+import numpy as np
+import pandas as pd
+import seaborn as sns
+
+# Set clean scientific publication typography configurations
+sns.set_style("white")
+plt.rcParams["font.family"] = "sans-serif"
+plt.rcParams["font.sans-serif"] = ["Arial", "DejaVu Sans"]
+
+# Initialize a 1x3 horizontal panel figure canvas
+fig = plt.figure(figsize=(18, 5.5))  # Slightly wider to accommodate size 14 legends/ticks cleanly
+
+# Balanced spacing to leave room for the text on the left side of Panel C
+gs = fig.add_gridspec(1, 3, wspace=0.35)
+
+# ==============================================================================
+# PANEL A: Identifying Fold-Switching Co-existence (Bimodal Populations)
+# ==============================================================================
+ax_a = fig.add_subplot(gs[0])
+x_a = np.linspace(0.2, 4.0, 500)
+lifetime_alpha = 0.65 * np.exp(-((x_a - 1.1) / 0.35) ** 2)
+lifetime_beta = 0.40 * np.exp(-((x_a - 2.6) / 0.55) ** 2)
+total_distribution = lifetime_alpha + lifetime_beta
+
+ax_a.plot(x_a, total_distribution, color="black", linewidth=2.5, zorder=4)
+ax_a.fill_between(
+    x_a,
+    0,
+    lifetime_alpha,
+    color="cyan",
+    alpha=0.35,
+    label=r"High FRET / Short $\tau$",
+)
+ax_a.fill_between(
+    x_a,
+    0,
+    lifetime_beta,
+    color="red",
+    alpha=0.35,
+    label=r"Low FRET / Long $\tau$",
+)
+
+ax_a.set_title(
+    "A: Fold-Switching Equilibrium", fontsize=18, fontweight="bold", pad=12
+)
+ax_a.set_xlabel("Fluorescence Lifetime (ns)", fontsize=16, fontweight="bold")
+ax_a.set_ylabel("Normalized Intensity Population", fontsize=16, fontweight="bold")
+ax_a.tick_params(axis="both", which="major", labelsize=14)  # <--- UPDATED: X & Y tick font size 14
+ax_a.set_xlim(0.2, 4.0)
+ax_a.set_ylim(0, 0.95)  # Slightly increased upper limit so size-14 legend doesn't overlap curve
+ax_a.legend(loc="upper right", fontsize=14, framealpha=0.9)  # <--- UPDATED: Legend font size 14
+sns.despine(ax=ax_a)
+
+# ==============================================================================
+# PANEL B: Mutational Profiling (Conformational Shifting distributions)
+# ==============================================================================
+ax_b = fig.add_subplot(gs[1])
+np.random.seed(42)
+
+wt_sample = np.concatenate(
+    [np.random.normal(11.5, 1.4, 60), np.random.normal(24.5, 1.4, 40)]
+)
+mut1_sample = np.random.normal(11.5, 1.1, 100)
+mut2_sample = np.random.normal(24.5, 1.1, 100)
+
+structured_records = []
+variants_map = [
+    (wt_sample, "Wild Type\n(Equilibrium)"),
+    (mut1_sample, "Mutant 1\n(Short)"),
+    (mut2_sample, "Mutant 2\n(Long)"),
+]
+for data_points, variant_name in variants_map:
+    for point in data_points:
+        structured_records.append({"Variant": variant_name, "FRET": point})
+df_b = pd.DataFrame(structured_records)
+
+sns.violinplot(
+    x="Variant",
+    y="FRET",
+    data=df_b,
+    ax=ax_b,
+    palette=["darkorchid", "cyan", "red"],
+    inner=None,
+    cut=1.2,
+)
+sns.stripplot(
+    x="Variant",
+    y="FRET",
+    data=df_b,
+    ax=ax_b,
+    color="black",
+    size=2.5,
+    alpha=0.25,
+    jitter=0.22,
+)
+
+ax_b.set_title(
+    "B: Mutational Characterization", fontsize=18, fontweight="bold", pad=12
+)
+ax_b.set_xlabel("Genetic Context", fontsize=16, fontweight="bold")
+ax_b.set_ylabel("FRET Efficiency (%)", fontsize=16, fontweight="bold")
+ax_b.tick_params(axis="both", which="major", labelsize=14)  # <--- UPDATED: X & Y tick font size 14
+ax_b.set_ylim(5, 31)
+sns.despine(ax=ax_b)
+
+# ==============================================================================
+# PANEL C: Evolutionary Tracking (Order: Labels -> Tree -> Heatmap)
+# ==============================================================================
+gs_c = gs[2].subgridspec(1, 3, width_ratios=[0.55, 1, 0.08], wspace=0.05)
+
+ax_tree = fig.add_subplot(gs_c[0])  # Left: Text Labels & Tree graphics
+ax_c = fig.add_subplot(gs_c[1])     # Center: Heatmap Matrix
+ax_cbar = fig.add_subplot(gs_c[2])  # Right: Colorbar Scale
+
+# Draw the manual tree branches
+ax_tree.plot([0.8, 1.0], [0.5, 0.5], color="black", lw=1.5)
+ax_tree.plot([0.8, 1.0], [1.5, 1.5], color="black", lw=1.5)
+ax_tree.plot([0.7, 1.0], [2.5, 2.5], color="black", lw=1.5)
+ax_tree.plot([0.85, 1.0], [3.5, 3.5], color="black", lw=1.5)
+ax_tree.plot([0.85, 1.0], [4.5, 4.5], color="black", lw=1.5)
+
+ax_tree.plot([0.8, 0.8], [0.5, 1.5], color="black", lw=1.5)
+ax_tree.plot([0.85, 0.85], [3.5, 4.5], color="black", lw=1.5)
+ax_tree.plot([0.7, 0.8], [1.0, 1.0], color="black", lw=1.5)
+ax_tree.plot([0.6, 0.7], [1.75, 1.75], color="black", lw=1.5)
+ax_tree.plot([0.6, 0.85], [4.0, 4.0], color="black", lw=1.5)
+ax_tree.plot([0.5, 0.6], [2.875, 2.875], color="black", lw=1.5)
+ax_tree.plot([0.6, 0.6], [1.75, 4.0], color="black", lw=1.5)
+
+two_line_labels = [
+    "Ancestral Node\n(Clade 1)",
+    "Clade 2\n(Gram+)",
+    "Clade 3\n(Intermediate)",
+    "Clade 4\n(Gram-)",
+    "Derived Strain\n(Clade 5)",
+]
+
+for i, text_label in enumerate(two_line_labels):
+    ax_tree.text(
+        x=0.45,
+        y=i + 0.5,
+        s=text_label,
+        ha="right",
+        va="center",
+        fontsize=14,
+        fontweight="bold",
+        color="black",
+    )
+
+ax_tree.set_xlim(0, 1.0)
+ax_tree.set_ylim(5.0, 0.0)
+ax_tree.axis("off")
+
+evolutionary_matrix = np.array(
+    [
+        [0.92, 0.08, 0.88],
+        [0.78, 0.22, 0.71],
+        [0.48, 0.52, 0.50],
+        [0.12, 0.88, 0.19],
+        [0.05, 0.95, 0.09],
+    ]
+)
+
+cyan_red_cmap = LinearSegmentedColormap.from_list("CyanRed", ["cyan", "red"])
+
+# Plot the heatmap
+sns.heatmap(
+    evolutionary_matrix,
+    ax=ax_c,
+    cmap=cyan_red_cmap,
+    robust=True,
+    cbar_ax=ax_cbar,
+    xticklabels=["Short\nBias", "Long\nBias", "Dynamic\nPlast."],
+    yticklabels=False,
+)
+
+# <--- UPDATED: Set right-side colorbar title and tick labels to font size 14
+ax_cbar.set_ylabel(
+    "Conformational Predominance Index", fontsize=14, fontweight="bold", labelpad=10
+)
+ax_cbar.tick_params(labelsize=14)
+
+# Axis configurations
+ax_tree.set_title(
+    "C: Evolutionary Lineage Maps", fontsize=18, fontweight="bold", pad=12, loc="left"
+)
+ax_c.set_xlabel("Structural Phenotype Space", fontsize=16, fontweight="bold")
+plt.setp(ax_c.get_xticklabels(), rotation=20, ha="center", fontsize=14)
+
+# Save and render the final publication-ready image layout
+plt.savefig(
+    "flim_fret_manuscript_perfect_reading_order_updated.png", dpi=1600, bbox_inches="tight"
+)
+plt.show()
